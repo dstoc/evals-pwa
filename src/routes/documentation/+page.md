@@ -246,7 +246,21 @@ tests:
 
 #### Javascript Assertions
 
-For `javascript` assertions, your code must provide a function with this signature:
+Javascript assertions run your custom code to validate model outputs. They are defined with `type: javascript` and require a `vars.code` parameter containing your Javascript/Typescript code.
+
+**Configuration:**
+
+*   `type: javascript`
+*   `vars`: An object containing:
+    *   `code: string`: The Javascript or Typescript code to execute.
+    *   _...any other custom variables you want to pass to your script._
+*   `columnAware?: boolean` (defaults to `false`):
+    *   If `false` (or omitted): The script executes immediately after its cell's model output is ready. `context.allOutputs` will be `undefined`.
+    *   If `true`: The script's execution is deferred until all model outputs in the current column are available. `context.allOutputs` will be populated, allowing column-wide checks.
+
+**Function Signature & Context:**
+
+Your code must provide a function with this signature:
 
 ```typescript
 execute(output: string | ArrayOutput, context: Context): MaybePromise<AssertionResult>
@@ -271,7 +285,7 @@ The `context.allOutputs` property, if available, is an array where each element 
 - Each element can be a `string`, a `FileReference`, an array of `(string | FileReference)` (if a cell produced multiple outputs like DALL-E), or `undefined` (if a cell had no output or an error).
 - Importantly, if a cell's output was an array, that array is preserved as an element within `context.allOutputs` (it is not flattened).
 
-This structure allows the script to compare the `currentCellOutput` against all other outputs in the column, including those with multiple parts.
+The `context.allOutputs` array provides a complete view of all model outputs within the current column, available when your Javascript assertion code executes (as assertions run after all model executions for the run are complete). This structure allows the script to compare the `currentCellOutput` against all other outputs in the column, including those with multiple parts.
 
 ```typescript
 interface AssertionResult {
@@ -282,60 +296,78 @@ interface AssertionResult {
 }
 ```
 
-For example:
+**Examples:**
 
-```js
-// Basic example: check output length
-function execute(output, context) {
-  return { pass: output.length > 100; }
-}
-```
+1.  **Basic Output Check (Not Column-Aware)**
 
-**Example: Row-Specific Uniqueness Check**
+    This assertion checks if the current cell's output matches a regex pattern defined in `vars`. It doesn't need to know about other outputs in the column.
 
-This example demonstrates using `context.allOutputs` to check if the `currentCellOutput` (the output of the cell this assertion runs on) is duplicated elsewhere in the column. This version handles potentially complex or nested outputs by using `JSON.stringify` for comparison.
-
-```yaml
-assert:
-  - type: javascript
-    vars:
-      code: |
-        // currentCellOutput is the output of the cell this assertion runs on.
-        // context.vars contains test case variables.
-        // context.allOutputs is an array of all outputs in the current column.
-        // Each element in context.allOutputs can be a string, a FileReference, 
-        // an array of [string | FileReference], or undefined.
-
-        function execute(currentCellOutput, context) {
-          if (context.allOutputs === undefined) {
-            // Fallback or error if allOutputs is not available
-            return { pass: true, message: "allOutputs not available for this check." };
-          }
-
-          // Example: Fail if the current cell's output is duplicated elsewhere in the column.
-          // This example uses JSON.stringify for robust comparison of potentially complex outputs.
-          // For FileReference objects, you might compare a specific property like '.uri' instead.
-
-          const currentOutputStringified = JSON.stringify(currentCellOutput);
-          let occurrences = 0;
-
-          for (const item of context.allOutputs) {
-            // Note: If comparing FileReference objects, direct stringify might not be useful.
-            // You'd typically compare a property, e.g., item.uri === currentCellOutput.uri if currentCellOutput is a FileReference.
-            // This example assumes string/array of string outputs for simplicity in the stringify comparison.
-            if (JSON.stringify(item) === currentOutputStringified) {
-              occurrences++;
+    ```yaml
+    assert:
+      - type: javascript
+        vars:
+          code: |
+            // currentCellOutput is the output for this cell
+            // context.vars contains test case variables
+            // context.allOutputs will be undefined here because columnAware is false/omitted.
+            function execute(currentCellOutput, context) {
+              const pattern = new RegExp(context.vars.myPattern);
+              if (!pattern.test(currentCellOutput)) {
+                return { pass: false, message: `Output does not match pattern: ${context.vars.myPattern}`};
+              }
+              return { pass: true };
             }
-          }
+          myPattern: "^[A-Za-z]+$" # Example: check if output is only letters
+        # columnAware defaults to false, or can be explicitly set:
+        # columnAware: false 
+    ```
 
-          if (occurrences > 1) {
-            return { pass: false, message: `Output ${currentOutputStringified} appears ${occurrences} times in the column.` };
-          }
-          return { pass: true };
-        }
-```
+2.  **Row-Specific Uniqueness Check (Column-Aware)**
 
-Note: When comparing `FileReference` objects, `JSON.stringify` might not be the most effective method as it will serialize the entire object. A more common approach is to compare a specific, uniquely identifying property of the `FileReference`, such as its `uri`.
+    This example demonstrates using `context.allOutputs` to check if the `currentCellOutput` is duplicated elsewhere in the column. This requires `columnAware: true`.
+
+    ```yaml
+    assert:
+      - type: javascript
+        vars:
+          code: |
+            // currentCellOutput is the output of the cell this assertion runs on.
+            // context.vars contains test case variables.
+            // context.allOutputs is an array of all outputs in the current column because columnAware: true.
+            // Each element in context.allOutputs can be a string, a FileReference, 
+            // an array of [string | FileReference], or undefined.
+
+            function execute(currentCellOutput, context) {
+              if (context.allOutputs === undefined) {
+                // This shouldn't happen if columnAware: true, but good practice to check.
+                return { pass: false, message: "allOutputs was expected but is undefined." };
+              }
+
+              // Example: Fail if the current cell's output is duplicated elsewhere in the column.
+              // This example uses JSON.stringify for robust comparison of potentially complex outputs.
+              // For FileReference objects, you might compare a specific property like '.uri' instead.
+
+              const currentOutputStringified = JSON.stringify(currentCellOutput);
+              let occurrences = 0;
+
+              for (const item of context.allOutputs) {
+                // Note: If comparing FileReference objects, direct stringify might not be useful.
+                // You'd typically compare a property, e.g., item.uri === currentCellOutput.uri if currentCellOutput is a FileReference.
+                // This example assumes string/array of string outputs for simplicity in the stringify comparison.
+                if (JSON.stringify(item) === currentOutputStringified) {
+                  occurrences++;
+                }
+              }
+
+              if (occurrences > 1) {
+                return { pass: false, message: `Output ${currentOutputStringified} appears ${occurrences} times in the column.` };
+              }
+              return { pass: true };
+            }
+        columnAware: true # This assertion needs to see all column outputs
+    ```
+
+    Note: When comparing `FileReference` objects, `JSON.stringify` might not be the most effective method as it will serialize the entire object. A more common approach is to compare a specific, uniquely identifying property of the `FileReference`, such as its `uri`.
 
 The code is run inside a sandboxed iframe with `<script type="module">`. It is only instantiated once for the entire run, so avoid side effects or global state. You can reference other files in your directory and import libraries from a CDN, but npm packages are not supported. Errors running the code will be shown in the UI.
 

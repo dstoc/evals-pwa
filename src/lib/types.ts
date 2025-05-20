@@ -16,6 +16,7 @@ const assertionSchema = z.object({
   description: z.string().optional(),
   vars: z.record(z.string(), z.unknown()).optional(),
   id: z.string().optional(),
+  columnAware: z.boolean().optional(),
 });
 export const normalizedProviderConfigSchema = z.object({
   mimeTypes: z.array(z.string()).optional(),

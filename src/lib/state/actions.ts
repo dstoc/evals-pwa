@@ -329,32 +329,240 @@ export async function runTests() {
   const results: LiveRun['results'] = [];
   const runner = new ParallelTaskQueue(config.options?.maxConcurrency ?? Infinity);
   const mgr = new AssertionManager(providerManager, abortController.signal);
-  const currentRunId = crypto.randomUUID(); // Define runId here to pass to runTest
+  const currentRunId = crypto.randomUUID();
 
-  try {
-    for (const test of globalTests) {
-      const testResults: Writable<LiveResult>[] = [];
-      for (const env of envs) {
-        const result = writable<LiveResult>({ rawPrompt: null, state: 'waiting' });
-        testResults.push(result);
-        runner.enqueue(async ({ abortSignal }) => {
-          // Pass envs (as allEnvs), globalTests (as allTests), and currentRunId
-          await runTest(
-            test,
-            env,
-            mgr,
-            result,
-            { abortSignal, cacheKey: test.cacheKey },
-            envs,
-            globalTests,
-            currentRunId,
-          );
-        });
-      }
-      results.push(testResults);
+  // Initialize results for UI
+  for (let i = 0; i < globalTests.length; i++) {
+    const testResultsRow: Writable<LiveResult>[] = [];
+    for (let j = 0; j < envs.length; j++) {
+      testResultsRow.push(writable<LiveResult>({ rawPrompt: null, state: 'waiting' }));
     }
+    results.push(testResultsRow);
+  }
+
+  // --- Phase 1: Model Executions ---
+  const modelOutputs: (Awaited<ReturnType<TestEnvironment['run']>> | undefined)[][] = Array(
+    globalTests.length,
+  )
+    .fill(null)
+    .map(() => Array(envs.length).fill(undefined));
+
+  for (let testIndex = 0; testIndex < globalTests.length; testIndex++) {
+    const test = globalTests[testIndex];
+    for (let envIndex = 0; envIndex < envs.length; envIndex++) {
+      const env = envs[envIndex];
+      const resultStore = results[testIndex][envIndex];
+
+      runner.enqueue(async ({ abortSignal }) => {
+        const context: RunContext = { abortSignal, cacheKey: test.cacheKey, cache };
+        try {
+          const generator = env.run(test.vars, context);
+          let next;
+          let started = false;
+          while (!next?.done) {
+            next = await generator.next(); // Consumes the generator
+            if (!started) {
+              resultStore.update((state) => ({ ...state, state: 'in-progress' }));
+              started = true;
+            }
+            if (!next.done) {
+              // Simplified update logic for model output streaming to UI
+              if (typeof next.value === 'string') {
+                const delta = next.value;
+                resultStore.update((state) => {
+                  const currentOutput = [...(state.output ?? [])];
+                  let lastString = '';
+                  if (currentOutput.length > 0 && typeof currentOutput[currentOutput.length - 1] === 'string') {
+                    lastString = currentOutput.pop() as string;
+                  }
+                  return { ...state, output: [...currentOutput, lastString + delta] };
+                });
+              } else if (next.value.type === 'replace') {
+                 resultStore.update((s) => applyModelUpdate(s, next.value.internalId, () => [next.value.output]));
+              } else if (next.value.type === 'append') {
+                 resultStore.update((s) => applyModelUpdate(s, next.value.internalId, (o) => {
+                    o = [...o];
+                    if(typeof next.value.output === 'string') {
+                        let last = ''; if(o.length > 0 && typeof o[o.length-1] === 'string') last = o.pop() as string;
+                        return [...o, last+next.value.output];
+                    } else return [...o, next.value.output];
+                 }));
+              }
+              // 'begin-stream' does nothing for UI here
+            }
+          }
+          modelOutputs[testIndex][envIndex] = next.value; // Store TestOutput
+          
+          // Store TestOutput from model execution
+          const testOutputFromModel = next.value;
+          modelOutputs[testIndex][envIndex] = testOutputFromModel;
+          
+          let liveOutputForUI = testOutputFromModel.output;
+          if (liveOutputForUI && !Array.isArray(liveOutputForUI)) liveOutputForUI = [liveOutputForUI];
+
+          const immediateAssertionResults: AssertionResult[] = [];
+          let hasDeferredAssertions = false;
+          let immediateAssertionsPass = true;
+
+          if (!testOutputFromModel.error) { // Only run immediate assertions if model execution succeeded
+            for (const assertionConfig of test.assert) {
+              const assertionProvider = mgr.getAssertion(assertionConfig, test.vars);
+              if (assertionConfig.type === 'javascript') {
+                if (assertionConfig.columnAware === true) {
+                  hasDeferredAssertions = true;
+                } else {
+                  // Execute non-column-aware JS assertion
+                  try {
+                    const res = await assertionProvider.run(testOutputFromModel.output!, { // output should exist if no error
+                      provider: env.provider,
+                      prompt: env.prompt,
+                      allOutputsInColumn: undefined, // Explicitly undefined
+                    });
+                    res.id = assertionConfig.id;
+                    immediateAssertionResults.push(res);
+                    if (!res.pass) immediateAssertionsPass = false;
+                  } catch (e) {
+                    const errorMsg = e instanceof Error ? e.message : String(e);
+                    immediateAssertionResults.push({ pass: false, message: `Assertion error: ${errorMsg}`, id: assertionConfig.id });
+                    immediateAssertionsPass = false;
+                  }
+                }
+              } else {
+                // Execute other non-JS assertion types
+                try {
+                  const res = await assertionProvider.run(testOutputFromModel.output!, { // output should exist if no error
+                    provider: env.provider,
+                    prompt: env.prompt,
+                    // allOutputsInColumn not relevant for non-JS assertions
+                  });
+                  res.id = assertionConfig.id;
+                  immediateAssertionResults.push(res);
+                  if (!res.pass) immediateAssertionsPass = false;
+                } catch (e) {
+                  const errorMsg = e instanceof Error ? e.message : String(e);
+                  immediateAssertionResults.push({ pass: false, message: `Assertion error: ${errorMsg}`, id: assertionConfig.id });
+                  immediateAssertionsPass = false;
+                }
+              }
+            }
+          }
+
+          let currentPhase1State: LiveResult['state'];
+          let currentPhase1Error = testOutputFromModel.error;
+          if (testOutputFromModel.error) {
+            currentPhase1State = 'error';
+          } else if (!immediateAssertionsPass) {
+            currentPhase1State = 'error';
+            if (!currentPhase1Error) { // Preserve model error if it exists
+                 currentPhase1Error = immediateAssertionResults.find(ar => !ar.pass)?.message || 'Immediate assertion failed';
+            }
+          } else if (hasDeferredAssertions) {
+            currentPhase1State = 'pending-deferred';
+          } else {
+            currentPhase1State = 'success';
+          }
+          
+          resultStore.update((state) => ({
+            ...state,
+            rawPrompt: testOutputFromModel.rawPrompt,
+            rawOutput: testOutputFromModel.rawOutput,
+            output: liveOutputForUI as LiveResult['output'],
+            latencyMillis: testOutputFromModel.latencyMillis,
+            tokenUsage: testOutputFromModel.tokenUsage,
+            history: testOutputFromModel.history?.map(h => ({...h, output: h.output === undefined ? undefined : (Array.isArray(h.output) ? h.output : [h.output])})),
+            state: currentPhase1State,
+            error: currentPhase1Error,
+            assertionResults: immediateAssertionResults,
+            pass: currentPhase1State === 'success', // Overall pass status after Phase 1
+          }));
+
+        } catch (err) { // Catch errors from env.run() or streaming
+          console.error(`Error during model execution & immediate assertions for test ${testIndex}, env ${envIndex}:`, err);
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          modelOutputs[testIndex][envIndex] = { rawPrompt: env.prompt, error: errorMessage };
+          resultStore.update((state) => ({
+            ...state,
+            state: 'error',
+            error: errorMessage,
+            pass: false,
+          }));
+        }
+      });
+    }
+  }
+
+  // Synchronization point: Wait for all model executions and immediate assertions
+  try {
+    await runner.completed();
+  } catch (err) {
+    console.warn('Phase 1 (Model executions & immediate assertions) was aborted:', err);
+    run.canceled = true;
   } finally {
-    await CodeSandbox.clear();
+    // CodeSandbox.clear(); // Moved to the main finally block
+  }
+
+  // --- Phase 2: Deferred columnAware Javascript Assertions ---
+  if (!run.canceled) {
+    for (let testIndex = 0; testIndex < globalTests.length; testIndex++) {
+      const test = globalTests[testIndex];
+      for (let envIndex = 0; envIndex < envs.length; envIndex++) {
+        const env = envs[envIndex];
+        const resultStore = results[testIndex][envIndex];
+        const currentCellState = get(resultStore);
+
+        // Only process if pending deferred assertions
+        if (currentCellState.state !== 'pending-deferred') {
+          continue;
+        }
+
+        const testOutput = modelOutputs[testIndex][envIndex];
+        // Model error would have been handled in Phase 1, state would not be 'pending-deferred'
+        // but as a safeguard:
+        if (!testOutput || testOutput.error || !testOutput.output) {
+            resultStore.update(s => ({...s, state: 'error', error: s.error || testOutput?.error || 'Missing output for deferred assertion', pass: false }));
+            continue;
+        }
+        
+        const currentColumnRawOutputs: ((string | FileReference | (string | FileReference)[] | undefined))[] = [];
+        for (let i = 0; i < globalTests.length; i++) {
+          currentColumnRawOutputs.push(modelOutputs[i][envIndex]?.output);
+        }
+
+        const deferredAssertionResults: AssertionResult[] = [];
+        let deferredAssertionsPass = true;
+
+        for (const assertionConfig of test.assert) {
+          if (assertionConfig.type === 'javascript' && assertionConfig.columnAware === true) {
+            const assertionProvider = mgr.getAssertion(assertionConfig, test.vars);
+            try {
+              const res = await assertionProvider.run(testOutput.output, {
+                provider: env.provider,
+                prompt: env.prompt,
+                allOutputsInColumn: currentColumnRawOutputs,
+              });
+              res.id = assertionConfig.id;
+              deferredAssertionResults.push(res);
+              if (!res.pass) deferredAssertionsPass = false;
+            } catch (e) {
+               const errorMsg = e instanceof Error ? e.message : String(e);
+               deferredAssertionResults.push({ pass: false, message: `Deferred assertion error: ${errorMsg}`, id: assertionConfig.id });
+               deferredAssertionsPass = false;
+            }
+          }
+        }
+        
+        const finalAssertionResults = [...(currentCellState.assertionResults || []), ...deferredAssertionResults];
+        const overallPass = currentCellState.pass !== false && deferredAssertionsPass; // Phase 1 must have passed for overall to pass
+
+        resultStore.update((state) => ({
+          ...state,
+          state: overallPass ? 'success' : 'error',
+          assertionResults: finalAssertionResults,
+          pass: overallPass,
+          error: overallPass ? state.error : (state.error || deferredAssertionResults.find(ar => !ar.pass)?.message || 'Deferred assertion failed'),
+        }));
+      }
+    }
   }
 
   // Create summaries derived from the testResults
@@ -572,156 +780,18 @@ async function runTest(
   allTests: NormalizedTestCase[],
   currentRunId: string,
 ): Promise<void> {
-  // TODO should this be safeRun if it will catch all errors?
-  const generator = env.run(test.vars, context);
-  let next;
-  let started = false;
-  while (!next?.done) {
-    next = await generator.next();
-    if (!started) {
-      // Wait for the model to respond before marking as in-progress
-      result.update((state) => ({
-        ...state,
-        state: 'in-progress',
-      }));
-      started = true;
-    }
-    if (!next.done) {
-      if (typeof next.value === 'string') {
-        const delta = next.value;
-        result.update((state) => {
-          const output = [...(state.output ?? [])]; // Copy so we don't mutate the original
-          let lastOutputString = '';
-          if (output.length > 0 && typeof output[output.length - 1] === 'string') {
-            lastOutputString = output.pop() as string;
-          }
-          return {
-            ...state,
-            state: 'in-progress',
-            // For now, we know that the output is always a string
-            output: [...output, lastOutputString + delta],
-          };
-        });
-      } else if (next.value.type === 'replace') {
-        const update = next.value;
-        result.update((state) =>
-          applyModelUpdate(state, update.internalId, (_output) => [update.output]),
-        );
-      } else if (next.value.type === 'append') {
-        const update = next.value;
-        result.update((state) =>
-          applyModelUpdate(state, update.internalId, (output) => {
-            output = [...output]; // Copy so we don't mutate the original
-            if (typeof update.output === 'string') {
-              let lastOutputString = '';
-              if (output.length > 0 && typeof output[output.length - 1] === 'string') {
-                lastOutputString = output.pop() as string;
-              }
-              return [...output, lastOutputString + update.output];
-            } else {
-              return [...output, update.output];
-            }
-          }),
-        );
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-      } else if (next.value.type === 'begin-stream') {
-        // Do nothing
-      } else {
-        throw new Error('Unknown model update type');
-      }
-    }
-  }
-  const testResult = next.value;
-
-  // FIXME: We should guarantee that SimpleEnvironment returns an array
-  let arrayOutput: LiveResult['output'];
-  if (testResult.output) {
-    arrayOutput = Array.isArray(testResult.output) ? testResult.output : [testResult.output];
-  }
-
-  if (testResult.error) {
-    result.update((state) => ({
-      ...state,
-      ...testResult,
-      history: testResult.history?.map((h) => ({
-        ...h,
-        output:
-          h.output === undefined ? undefined : Array.isArray(h.output) ? h.output : [h.output],
-      })),
-      output: arrayOutput,
-      state: 'error',
-      pass: false,
-    }));
-    return;
-  }
-  if (!testResult.output) {
-    result.update((state) => ({
-      ...state,
-      state: 'error',
-      error: 'No output',
-      pass: false,
-    }));
-    return;
-  }
-
-  // Test assertions
-  const assertions = test.assert.map((a) => ({
-    id: a.id,
-    assert: assertionManager.getAssertion(a, test.vars),
-  }));
-  const assertionResults: AssertionResult[] = [];
-
-  // 1. Determine envIndex and currentTestIndex
-  const envIndex = allEnvs.findIndex((e) => e === env);
-  const currentTestIndex = allTests.findIndex((t) => t === test);
-
-  // 2. Collate allOutputsInColumn. This array will hold the direct output of each cell in the column.
-  // The type of each element will be `string | FileReference | (string | FileReference)[] | undefined`.
-  const collectedColumnOutputs: ((string | FileReference | (string | FileReference)[] | undefined))[] = [];
-  const liveRunData = get(liveRunStore)[currentRunId];
-
-  if (liveRunData && liveRunData.run && liveRunData.run.results) {
-    for (let i = 0; i < allTests.length; i++) {
-      if (i === currentTestIndex) {
-        // For the current test, use its fresh output.
-        // testResult.output is `string | FileReference | (string | FileReference)[] | undefined`
-        collectedColumnOutputs.push(testResult.output);
-      } else {
-        // For other tests in the column, get their stored output.
-        const cellStore = liveRunData.run.results[i]?.[envIndex];
-        if (cellStore) {
-          // get(cellStore).output is `(string | FileReference)[] | undefined`
-          // but LiveResult['output'] can also be string | FileReference.
-          // The type of collectedColumnOutputs elements accommodates this.
-          collectedColumnOutputs.push(get(cellStore).output);
-        } else {
-          collectedColumnOutputs.push(undefined); // Cell might not exist or have output yet.
-        }
-      }
-    }
-  }
-  // No flattening step is performed. collectedColumnOutputs now matches the required type for context.allOutputsInColumn.
-
-  for (const assertion of assertions) {
-    const currentAssertionResult = await assertion.assert.run(testResult.output, {
-      provider: env.provider,
-      prompt: env.prompt,
-      allOutputsInColumn: collectedColumnOutputs, // Pass the collected (non-flattened) column data
-    });
-    currentAssertionResult.id = assertion.id;
-    assertionResults.push(currentAssertionResult);
-  }
-  result.update((state) => ({
-    ...state,
-    ...testResult,
-    history: testResult.history?.map((h) => ({
-      ...h,
-      output: h.output === undefined ? undefined : Array.isArray(h.output) ? h.output : [h.output],
-    })),
-    output: arrayOutput,
-    state: assertionResults.every((r) => r.pass) ? 'success' : 'error',
-    assertionResults,
-  }));
+async function runTest(
+  test: NormalizedTestCase,
+  env: TestEnvironment,
+  assertionManager: AssertionManager,
+  result: Writable<LiveResult>,
+  context: RunContext,
+  // New parameters for accessing column data
+  allEnvs: TestEnvironment[],
+  allTests: NormalizedTestCase[],
+  currentRunId: string,
+): Promise<void> {
+   throw new Error('runTest should no longer be called directly. Logic is split into phases.');
 }
 
 function liveRunToRun(liveRun: LiveRun): Run {
