@@ -255,6 +255,7 @@ export interface AssertionProvider {
     context: {
       provider: TestEnvironment['provider'];
       prompt: TestEnvironment['prompt'];
+      allOutputsInColumn?: ((string | FileReference | (string | FileReference)[] | undefined))[] | undefined;
     },
   ): MaybePromise<AssertionResult>;
   destroy?: () => void;

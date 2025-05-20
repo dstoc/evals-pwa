@@ -34,7 +34,16 @@ export function createJavascriptAssertion(
           const code = await toCodeReference(parsedArgs.data.code);
           execute = await code.bind();
         }
-        const res = await execute(output, { vars: testVars, ...context });
+        const executionContext = {
+          vars: testVars,
+          ...context, // Spreads provider, prompt, and allOutputsInColumn
+        };
+        // Ensure allOutputsInColumn is passed as allOutputs
+        if (context.allOutputsInColumn !== undefined) {
+          (executionContext as any).allOutputs = context.allOutputsInColumn;
+        }
+
+        const res = await execute(output, executionContext);
         const parsed = jsResultSchema.parse(res);
         const visuals: AssertionResult['visuals'] = parsed.visuals
           ? await Promise.all(

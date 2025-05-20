@@ -251,18 +251,27 @@ For `javascript` assertions, your code must provide a function with this signatu
 ```typescript
 execute(output: string | ArrayOutput, context: Context): MaybePromise<AssertionResult>
 
-type ArrayOutput = Array<string | { file: File; uri: string }>; // Used for DALL-E
+type ArrayOutput = Array<string | { file: File; uri: string }>; // Used for DALL-E. More generally, the `output` argument can be `string | FileReference | (string | FileReference)[]`.
 type Context = {
-  vars: Record<string, unknown>; // Test case vars
-  provider: { id: string | null; labeled?: Record<string, { id: string }> }; // Provider
-  // Labeled providers are only used for pipeline prompts
-  prompt: Prompt; // Prompt
+  vars: Record<string, unknown>; // Test case variables
+  provider: { id: string | null; labeled?: Record<string, { id: string }> }; // Provider information
+  prompt: Prompt; // Prompt details
+  // Optional: All outputs in the current column. Each element corresponds to a cell's output.
+  // A cell's output can be a string, a FileReference, an array (e.g. DALL-E), or undefined.
+  // Nested arrays from cells are preserved.
+  allOutputs?: ((string | FileReference | (string | FileReference)[] | undefined))[] | undefined;
 };
 ```
 
 Typescript is also supported, and will be compiled to Javascript. Your `execute` function must return whether the assertion passed, along with optional additional information.
 
-Note: with DALL-E, `output` will be an array of `[{file: File, uri: string}, string|undefined]` containing the image and the (optional) revised prompt.
+The first argument to `execute` (named `output` in the signature, or `currentCellOutput` in the example below) is the output of the specific test case (cell) for which the assertion is currently running. This can be a `string`, a `FileReference`, or an array of `(string | FileReference)` (e.g., from DALL-E).
+
+The `context.allOutputs` property, if available, is an array where each element represents the output of a single cell in the current column.
+- Each element can be a `string`, a `FileReference`, an array of `(string | FileReference)` (if a cell produced multiple outputs like DALL-E), or `undefined` (if a cell had no output or an error).
+- Importantly, if a cell's output was an array, that array is preserved as an element within `context.allOutputs` (it is not flattened).
+
+This structure allows the script to compare the `currentCellOutput` against all other outputs in the column, including those with multiple parts.
 
 ```typescript
 interface AssertionResult {
@@ -276,10 +285,57 @@ interface AssertionResult {
 For example:
 
 ```js
+// Basic example: check output length
 function execute(output, context) {
   return { pass: output.length > 100; }
 }
 ```
+
+**Example: Row-Specific Uniqueness Check**
+
+This example demonstrates using `context.allOutputs` to check if the `currentCellOutput` (the output of the cell this assertion runs on) is duplicated elsewhere in the column. This version handles potentially complex or nested outputs by using `JSON.stringify` for comparison.
+
+```yaml
+assert:
+  - type: javascript
+    vars:
+      code: |
+        // currentCellOutput is the output of the cell this assertion runs on.
+        // context.vars contains test case variables.
+        // context.allOutputs is an array of all outputs in the current column.
+        // Each element in context.allOutputs can be a string, a FileReference, 
+        // an array of [string | FileReference], or undefined.
+
+        function execute(currentCellOutput, context) {
+          if (context.allOutputs === undefined) {
+            // Fallback or error if allOutputs is not available
+            return { pass: true, message: "allOutputs not available for this check." };
+          }
+
+          // Example: Fail if the current cell's output is duplicated elsewhere in the column.
+          // This example uses JSON.stringify for robust comparison of potentially complex outputs.
+          // For FileReference objects, you might compare a specific property like '.uri' instead.
+
+          const currentOutputStringified = JSON.stringify(currentCellOutput);
+          let occurrences = 0;
+
+          for (const item of context.allOutputs) {
+            // Note: If comparing FileReference objects, direct stringify might not be useful.
+            // You'd typically compare a property, e.g., item.uri === currentCellOutput.uri if currentCellOutput is a FileReference.
+            // This example assumes string/array of string outputs for simplicity in the stringify comparison.
+            if (JSON.stringify(item) === currentOutputStringified) {
+              occurrences++;
+            }
+          }
+
+          if (occurrences > 1) {
+            return { pass: false, message: `Output ${currentOutputStringified} appears ${occurrences} times in the column.` };
+          }
+          return { pass: true };
+        }
+```
+
+Note: When comparing `FileReference` objects, `JSON.stringify` might not be the most effective method as it will serialize the entire object. A more common approach is to compare a specific, uniquely identifying property of the `FileReference`, such as its `uri`.
 
 The code is run inside a sandboxed iframe with `<script type="module">`. It is only instantiated once for the entire run, so avoid side effects or global state. You can reference other files in your directory and import libraries from a CDN, but npm packages are not supported. Errors running the code will be shown in the UI.
 

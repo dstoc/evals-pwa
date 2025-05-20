@@ -329,6 +329,8 @@ export async function runTests() {
   const results: LiveRun['results'] = [];
   const runner = new ParallelTaskQueue(config.options?.maxConcurrency ?? Infinity);
   const mgr = new AssertionManager(providerManager, abortController.signal);
+  const currentRunId = crypto.randomUUID(); // Define runId here to pass to runTest
+
   try {
     for (const test of globalTests) {
       const testResults: Writable<LiveResult>[] = [];
@@ -336,7 +338,17 @@ export async function runTests() {
         const result = writable<LiveResult>({ rawPrompt: null, state: 'waiting' });
         testResults.push(result);
         runner.enqueue(async ({ abortSignal }) => {
-          await runTest(test, env, mgr, result, { abortSignal, cacheKey: test.cacheKey });
+          // Pass envs (as allEnvs), globalTests (as allTests), and currentRunId
+          await runTest(
+            test,
+            env,
+            mgr,
+            result,
+            { abortSignal, cacheKey: test.cacheKey },
+            envs,
+            globalTests,
+            currentRunId,
+          );
         });
       }
       results.push(testResults);
@@ -360,7 +372,7 @@ export async function runTests() {
 
   // Show the live run immediately
   const run: LiveRun = {
-    id: crypto.randomUUID(),
+    id: currentRunId, // Use the runId defined earlier
     timestamp: Date.now(),
     description: config.description,
     canceled: false,
@@ -555,6 +567,10 @@ async function runTest(
   assertionManager: AssertionManager,
   result: Writable<LiveResult>,
   context: RunContext,
+  // New parameters for accessing column data
+  allEnvs: TestEnvironment[],
+  allTests: NormalizedTestCase[],
+  currentRunId: string,
 ): Promise<void> {
   // TODO should this be safeRun if it will catch all errors?
   const generator = env.run(test.vars, context);
@@ -654,13 +670,46 @@ async function runTest(
     assert: assertionManager.getAssertion(a, test.vars),
   }));
   const assertionResults: AssertionResult[] = [];
+
+  // 1. Determine envIndex and currentTestIndex
+  const envIndex = allEnvs.findIndex((e) => e === env);
+  const currentTestIndex = allTests.findIndex((t) => t === test);
+
+  // 2. Collate allOutputsInColumn. This array will hold the direct output of each cell in the column.
+  // The type of each element will be `string | FileReference | (string | FileReference)[] | undefined`.
+  const collectedColumnOutputs: ((string | FileReference | (string | FileReference)[] | undefined))[] = [];
+  const liveRunData = get(liveRunStore)[currentRunId];
+
+  if (liveRunData && liveRunData.run && liveRunData.run.results) {
+    for (let i = 0; i < allTests.length; i++) {
+      if (i === currentTestIndex) {
+        // For the current test, use its fresh output.
+        // testResult.output is `string | FileReference | (string | FileReference)[] | undefined`
+        collectedColumnOutputs.push(testResult.output);
+      } else {
+        // For other tests in the column, get their stored output.
+        const cellStore = liveRunData.run.results[i]?.[envIndex];
+        if (cellStore) {
+          // get(cellStore).output is `(string | FileReference)[] | undefined`
+          // but LiveResult['output'] can also be string | FileReference.
+          // The type of collectedColumnOutputs elements accommodates this.
+          collectedColumnOutputs.push(get(cellStore).output);
+        } else {
+          collectedColumnOutputs.push(undefined); // Cell might not exist or have output yet.
+        }
+      }
+    }
+  }
+  // No flattening step is performed. collectedColumnOutputs now matches the required type for context.allOutputsInColumn.
+
   for (const assertion of assertions) {
-    const result = await assertion.assert.run(testResult.output, {
+    const currentAssertionResult = await assertion.assert.run(testResult.output, {
       provider: env.provider,
       prompt: env.prompt,
+      allOutputsInColumn: collectedColumnOutputs, // Pass the collected (non-flattened) column data
     });
-    result.id = assertion.id;
-    assertionResults.push(result);
+    currentAssertionResult.id = assertion.id;
+    assertionResults.push(currentAssertionResult);
   }
   result.update((state) => ({
     ...state,
