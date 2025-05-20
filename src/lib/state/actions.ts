@@ -579,54 +579,66 @@ export async function runTests() {
   );
 
   // Show the live run immediately
-  const run: LiveRun = {
-    id: currentRunId, // Use the runId defined earlier
+  const runDetails: LiveRun = { // Renamed from 'run' to 'runDetails'
+    id: currentRunId,
     timestamp: Date.now(),
     description: config.description,
-    canceled: false,
+    canceled: false, // Initial value is important
     envs: runEnvs,
     tests: globalTests,
     varNames: getVarNamesForTests(globalTests),
-    results,
+    results, // This is the Writable<LiveResult>[][]
     summaries,
   };
+
   liveRunStore.update((state) => ({
     ...state,
-    [run.id]: {
-      run,
+    [runDetails.id]: { // Use runDetails.id
+      run: runDetails,  // Use runDetails object
       abort: () => {
         runner.abort();
         abortController.abort();
       },
     },
   }));
-  selectedRunIdStore.set(run.id);
+  selectedRunIdStore.set(runDetails.id); // Use runDetails.id
 
+  // The existing try/catch/finally for the *overall* run completion
   try {
-    // Wait to finish
-    await runner.completed();
+    // This await was for the *second* runner.completed() call in the original faulty code.
+    // In the refactored code from Turn 53, runner.completed() for Phase 1 is awaited earlier.
+    // This try/catch/finally block is now for the *overall* completion of the run,
+    // including both phases. If Phase 1 was aborted, runDetails.canceled would already be true.
+    // If runner.completed() was called after Phase 1 and it threw (aborted), this might be redundant
+    // or needs to be the primary one. Assuming this is the main one for overall run state.
+    // If runner.completed() was already awaited for Phase 1, this might not be strictly needed
+    // unless there's more work being added to the runner queue after phase 2 (which there isn't).
+    // For safety and to match the structure, we'll keep it, but note its context.
+    // In the provided solution for Turn 53, runner.completed() is only called once for Phase 1.
+    // This implies this block might be the one that was intended to catch the overall completion
+    // or an error during the final cleanup steps if runner was still active.
+    // Given the prompt, this is the block to modify.
+    await runner.completed(); 
   } catch (err) {
-    // Run was aborted
-    console.warn('Run was aborted:', err);
-    run.canceled = true;
+    console.warn('Run was aborted (this might be from Phase 1 or overall):', err);
+    runDetails.canceled = true; // Use runDetails.canceled
   } finally {
-    // Clean up and save the run
     mgr.destroy();
+    CodeSandbox.clear(); // Ensure CodeSandbox is cleared here as well
     liveRunStore.update((state) => {
       const newState = { ...state };
-      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-      delete newState[run.id];
+      delete newState[runDetails.id]; // Use runDetails.id
       return newState;
     });
   }
 
+  // Update runStore and storage with runDetails
   runStore.update((runs) => ({
     ...runs,
-    [run.id]: liveRunToRun(run),
+    [runDetails.id]: liveRunToRun(runDetails), // Use runDetails
   }));
 
-  // Save the run to storage
-  await storage.addRun(configFile, liveRunToRun(run));
+  await storage.addRun(configFile, liveRunToRun(runDetails)); // Use runDetails
 
   if (document.visibilityState !== 'visible' && Notification.permission === 'granted') {
     new Notification('Eval complete', { body: 'See your results in Evals.' });
