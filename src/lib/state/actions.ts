@@ -769,31 +769,6 @@ function applyModelUpdate(
   };
 }
 
-async function runTest(
-  test: NormalizedTestCase,
-  env: TestEnvironment,
-  assertionManager: AssertionManager,
-  result: Writable<LiveResult>,
-  context: RunContext,
-  // New parameters for accessing column data
-  allEnvs: TestEnvironment[],
-  allTests: NormalizedTestCase[],
-  currentRunId: string,
-): Promise<void> {
-async function runTest(
-  test: NormalizedTestCase,
-  env: TestEnvironment,
-  assertionManager: AssertionManager,
-  result: Writable<LiveResult>,
-  context: RunContext,
-  // New parameters for accessing column data
-  allEnvs: TestEnvironment[],
-  allTests: NormalizedTestCase[],
-  currentRunId: string,
-): Promise<void> {
-   throw new Error('runTest should no longer be called directly. Logic is split into phases.');
-}
-
 function liveRunToRun(liveRun: LiveRun): Run {
   const { varNames: _varNames, summaries: _summaries, ...rest } = liveRun;
   return {
