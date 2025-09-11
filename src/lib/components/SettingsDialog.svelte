@@ -26,7 +26,7 @@
     }
     envStore.set(
       Object.entries(newEnv)
-        .map(([key, value]) => `${key}=${String(value)}`)
+        .map(([key, value]) => `${key}=${value}`)
         .join('\n'),
     );
     dispatchOpenState(false);

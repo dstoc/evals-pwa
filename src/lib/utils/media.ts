@@ -75,7 +75,7 @@ export function geminiDataToWav(chunks: Uint8Array[]): Blob {
   const data = new Int16Array(chunks.flatMap((c) => Array.from(new Int16Array(c.buffer))));
   const wav = new WaveFile();
   wav.fromScratch(1, 24000, '16', new Int16Array(data.buffer));
-  return new Blob([wav.toBuffer()], { type: 'audio/wav' });
+  return new Blob([wav.toBuffer().buffer as ArrayBuffer], { type: 'audio/wav' });
 }
 
 export function decodeB64Blob(data: string): Uint8Array {

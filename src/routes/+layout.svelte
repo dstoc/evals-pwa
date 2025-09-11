@@ -17,6 +17,7 @@
   import FolderPicker from '$lib/components/FolderPicker.svelte';
   import { cn } from '$lib/utils/shadcn';
   import { page } from '$app/stores';
+  import { resolve } from '$app/paths';
   import { alertStore } from '$lib/state/ui';
   import type { Action as SvelteAction } from 'svelte/action';
   import { Toaster } from '$lib/components/ui/sonner';
@@ -53,16 +54,16 @@
   <div class="hidden border-r bg-muted/40 md:block">
     <div class="flex h-full max-h-screen flex-col gap-2">
       <div class="flex h-14 items-center border-b px-4">
-        <a href="/" class="flex items-center gap-2 font-semibold">
+        <a href={resolve('/')} class="flex items-center gap-2 font-semibold">
           <FlaskConical class="h-6 w-6" />
           <span class="">Evals</span>
         </a>
       </div>
       <div class="flex-1">
         <nav class="grid items-start px-2 text-sm font-medium">
-          {#each links as { name, href, icon }}
+          {#each links as { name, href, icon } (href)}
             <a
-              {href}
+              href={resolve(href)}
               class={cn(
                 'flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground transition-all hover:text-primary',
                 href === $page.url.pathname ? 'bg-slate-200' : '',
@@ -89,16 +90,16 @@
         </Sheet.Trigger>
         <Sheet.Content side="left" class="flex flex-col">
           <nav class="grid gap-2 text-lg font-medium">
-            <a href="##" class="flex items-center gap-2 text-lg font-semibold">
+            <a href={resolve('/')} class="flex items-center gap-2 text-lg font-semibold">
               <FlaskConical class="h-6 w-6" />
               <span class="sr-only">Evals</span>
             </a>
-            {#each links as { name, href, icon }}
+            {#each links as { name, href, icon } (href)}
               <Sheet.Close asChild let:builder>
                 {@const action = castSheetCloseBuilder(builder).action}
                 <a
                   use:action
-                  {href}
+                  href={resolve(href)}
                   class="mx-[-0.65rem] flex items-center gap-4 rounded-xl px-3 py-2 text-muted-foreground hover:text-foreground"
                 >
                   {#if icon}
@@ -146,7 +147,7 @@
     <AlertDialog.Header>
       <AlertDialog.Title>{$alertStore?.title ?? 'Error'}</AlertDialog.Title>
       <AlertDialog.Description>
-        {#each $alertStore?.description ?? [] as description}
+        {#each $alertStore?.description ?? [] as description (description)}
           <p>{description}</p>
         {:else}
           <p>An unknown error occurred.</p>
