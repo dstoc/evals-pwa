@@ -18,6 +18,7 @@
   import Filter from 'lucide-svelte/icons/filter';
   import { Textarea } from '$lib/components/ui/textarea';
   import { pluralize } from '$lib/utils/strings';
+  import { resolve } from '$app/paths';
 
   function setSelectedRunId(id: unknown) {
     if (id !== null && typeof id !== 'string') {
@@ -95,7 +96,7 @@ tests:
           ignoreCase: true
 </pre>
     <p>
-      For more details, check out the <a href="/documentation">documentation</a>.
+      For more details, check out the <a href={resolve('/documentation')}>documentation</a>.
     </p>
   {:else}
     <div class="flex flex-row items-center gap-2">

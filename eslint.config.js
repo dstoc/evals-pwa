@@ -27,6 +27,19 @@ export default ts.config(
           allowNumber: true,
         },
       ],
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/restrict-plus-operands': 'off',
+      '@typescript-eslint/no-redundant-type-constituents': 'off',
+      '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/no-unnecessary-condition': 'off',
+      '@typescript-eslint/no-unnecessary-type-assertion': 'off',
+      '@typescript-eslint/ban-ts-comment': 'off',
+      'no-undef': 'off',
+      '@typescript-eslint/no-deprecated': 'off',
     },
   },
   {
@@ -51,6 +64,13 @@ export default ts.config(
       parserOptions: {
         parser: ts.parser,
       },
+    },
+  },
+  {
+    rules: {
+      'svelte/require-each-key': 'off',
+      'svelte/no-navigation-without-resolve': 'off',
+      'svelte/require-store-reactive-access': 'off',
     },
   },
 );

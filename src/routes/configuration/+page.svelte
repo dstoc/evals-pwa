@@ -13,6 +13,7 @@
   import { decodeGzipB64, encodeGzipB64 } from '$lib/utils/encodeGzipB64';
   import { toast } from 'svelte-sonner';
   import { goto } from '$app/navigation';
+  import { resolve } from '$app/paths';
 
   async function reload() {
     await loadStateFromStorage();
@@ -66,7 +67,7 @@
       // Remove from URL
       const newUrl = new URL($page.url);
       newUrl.searchParams.delete('template');
-      await goto(newUrl, { replaceState: true });
+      await goto(resolve(newUrl), { replaceState: true });
     } else if (
       $storageStore instanceof FileSystemEvalsStorage &&
       $storageStore.fs instanceof InMemoryStorage

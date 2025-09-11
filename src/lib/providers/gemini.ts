@@ -304,7 +304,7 @@ export class GeminiProvider implements ModelProvider {
           return geminiDataToWav([byteArray]);
         }
 
-        return new Blob([byteArray], { type: part.inlineData.mimeType });
+        return new Blob([byteArray.buffer as ArrayBuffer], { type: part.inlineData.mimeType });
       }
       if ('executableCode' in part) {
         return {
