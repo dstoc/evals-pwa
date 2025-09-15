@@ -80,6 +80,10 @@ export async function dereferenceFilePathsImpl(
       const file = res;
       return handleFile(fileUri, file, options, state);
     }
+    if (val.startsWith('data:')) {
+      const blob = await fetch(val).then((r) => r.blob());
+      return handleBlob(blob, options, state);
+    }
     return val;
   }
   if (Array.isArray(val)) {

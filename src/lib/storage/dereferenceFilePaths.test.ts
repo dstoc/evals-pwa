@@ -92,6 +92,22 @@ describe('dereferenceFilePaths', () => {
         `);
   });
 
+  test('loads data urls', async () => {
+    const storage = new InMemoryStorage();
+    const input = {
+      a: 'data:text/plain;base64,aGVsbG8gd29ybGQh',
+    };
+    const output = await dereferenceFilePaths(input, { storage });
+    expect(output).toMatchInlineSnapshot(`
+      {
+        "changed": true,
+        "result": {
+          "a": "hello world!",
+        },
+      }
+    `);
+  });
+
   test('allows referenced yaml to reference additional files', async () => {
     const storage = new InMemoryStorage();
     await storage.writeFile('file:///a.yaml', 'c: 3\nd: file:///b.txt');
