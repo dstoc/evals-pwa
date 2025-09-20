@@ -1,6 +1,7 @@
 import type { ModelProvider } from '$lib/types';
 import { GeminiProvider } from './gemini';
 import { OpenaiProvider, type OpenaiConfig } from './openai';
+import { OpenAiResponses } from './openai-responses';
 import { ReverserProvider } from './reverser';
 import { ChromeProvider } from './chrome';
 import { OllamaProvider } from './ollama';
@@ -38,6 +39,11 @@ export class ProviderManager {
         throw new Error('OPENAI_API_KEY not found');
       }
       return new OpenaiProvider(modelName, this.env.OPENAI_API_KEY, config);
+    } else if (providerId === 'openai-responses') {
+      if (typeof this.env.OPENAI_API_KEY !== 'string') {
+        throw new Error('OPENAI_API_KEY not found');
+      }
+      return new OpenAiResponses(modelName, this.env.OPENAI_API_KEY, config);
     } else if (providerId === 'dalle') {
       if (typeof this.env.OPENAI_API_KEY !== 'string') {
         throw new Error('OPENAI_API_KEY not found');
@@ -79,7 +85,7 @@ export class ProviderManager {
 
     if (providerId === 'gemini' || providerId === 'gemini-live') {
       return ['GEMINI_API_KEY'];
-    } else if (providerId === 'openai' || providerId === 'dalle') {
+    } else if (providerId === 'openai' || providerId === 'openai-responses' || providerId === 'dalle') {
       return ['OPENAI_API_KEY'];
     } else if (providerId === 'anthropic') {
       return ['ANTHROPIC_API_KEY'];
