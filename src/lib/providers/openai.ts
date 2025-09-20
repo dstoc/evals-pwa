@@ -204,7 +204,7 @@ export class OpenaiProvider implements ModelProvider {
   }
 }
 
-function getCost(model: string, prompt: number, completion: number): number | undefined {
+export function getCost(model: string, prompt: number, completion: number): number | undefined {
   // As of July 18 2024
   let inputCostPerMillion: number, outputCostPerMillion: number;
   if (model.startsWith('gpt-4.1-nano')) {
